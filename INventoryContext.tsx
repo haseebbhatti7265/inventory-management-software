@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useEffect, useState, ReactNode } from 'react';
+import React, { createContext, useContext, useEffect, useMemo, useState, ReactNode } from 'react';
 import { Product, Category, StockEntry, Sale, DashboardStats } from '../type';
 import { storage, generateId } from '../utils/storage';
 
@@ -22,9 +22,11 @@ interface InventoryContextType {
 
   // Stock
   addStock: (stock: Omit<StockEntry, 'id' | 'createdAt' | 'totalCost'>) => void;
+  deleteStockEntry: (id: string) => void;
 
   // Sales
   addSale: (sale: Omit<Sale, 'id' | 'createdAt' | 'totalRevenue' | 'profit'>) => void;
+  deleteSale: (id: string) => void;
 }
 
 const InventoryContext = createContext<InventoryContextType | undefined>(undefined);
@@ -52,7 +54,7 @@ export const InventoryProvider: React.FC<{ children: ReactNode }> = ({ children 
   }, []);
 
   // Calculate dashboard stats
-  const dashboardStats: DashboardStats = React.useMemo(() => {
+  const dashboardStats: DashboardStats = useMemo(() => {
     const totalProducts = products.length;
     const totalCategories = categories.length;
     const totalStock = products.reduce((sum, product) => sum + product.stock, 0);
@@ -80,7 +82,7 @@ export const InventoryProvider: React.FC<{ children: ReactNode }> = ({ children 
       stock: 0,
       createdAt: new Date().toISOString(),
     };
-    
+
     const updatedProducts = [...products, newProduct];
     setProducts(updatedProducts);
     storage.saveProducts(updatedProducts);
@@ -95,9 +97,19 @@ export const InventoryProvider: React.FC<{ children: ReactNode }> = ({ children 
   };
 
   const deleteProduct = (id: string) => {
+    // Remove product
     const updatedProducts = products.filter(product => product.id !== id);
+
+    // Cascade delete related stock entries and sales
+    const updatedStockEntries = stockEntries.filter(se => se.productId !== id);
+    const updatedSales = sales.filter(s => s.productId !== id);
+
     setProducts(updatedProducts);
+    setStockEntries(updatedStockEntries);
+    setSales(updatedSales);
     storage.saveProducts(updatedProducts);
+    storage.saveStockEntries(updatedStockEntries);
+    storage.saveSales(updatedSales);
   };
 
   // Categories
@@ -107,7 +119,7 @@ export const InventoryProvider: React.FC<{ children: ReactNode }> = ({ children 
       id: generateId(),
       createdAt: new Date().toISOString(),
     };
-    
+
     const updatedCategories = [...categories, newCategory];
     setCategories(updatedCategories);
     storage.saveCategories(updatedCategories);
@@ -137,14 +149,13 @@ export const InventoryProvider: React.FC<{ children: ReactNode }> = ({ children 
       createdAt: new Date().toISOString(),
     };
 
-    // Update product stock and purchase price
+    // Update product stock and purchase price (weighted average)
     const updatedProducts = products.map(product => {
       if (product.id === stockData.productId) {
         const currentStock = product.stock;
         const currentPurchasePrice = product.purchasePrice || 0;
         const newStock = currentStock + stockData.quantity;
-        
-        // Calculate weighted average purchase price
+
         const totalCurrentValue = currentStock * currentPurchasePrice;
         const totalNewValue = totalCurrentValue + totalCost;
         const newPurchasePrice = newStock > 0 ? totalNewValue / newStock : stockData.purchasePrice;
@@ -159,7 +170,23 @@ export const InventoryProvider: React.FC<{ children: ReactNode }> = ({ children 
     });
 
     const updatedStockEntries = [...stockEntries, newStockEntry];
-    
+
+    setProducts(updatedProducts);
+    setStockEntries(updatedStockEntries);
+    storage.saveProducts(updatedProducts);
+    storage.saveStockEntries(updatedStockEntries);
+  };
+
+  const deleteStockEntry = (id: string) => {
+    const entry = stockEntries.find(se => se.id === id);
+    if (!entry) return;
+
+    // Roll back the stock on the related product
+    const updatedProducts = products.map(p =>
+      p.id === entry.productId ? { ...p, stock: Math.max(0, p.stock - entry.quantity) } : p
+    );
+    const updatedStockEntries = stockEntries.filter(se => se.id !== id);
+
     setProducts(updatedProducts);
     setStockEntries(updatedStockEntries);
     storage.saveProducts(updatedProducts);
@@ -175,7 +202,7 @@ export const InventoryProvider: React.FC<{ children: ReactNode }> = ({ children 
 
     const totalRevenue = saleData.quantity * saleData.sellingPrice;
     const profit = saleData.quantity * (saleData.sellingPrice - saleData.purchasePrice);
-    
+
     const newSale: Sale = {
       ...saleData,
       id: generateId(),
@@ -192,7 +219,23 @@ export const InventoryProvider: React.FC<{ children: ReactNode }> = ({ children 
     );
 
     const updatedSales = [...sales, newSale];
-    
+
+    setProducts(updatedProducts);
+    setSales(updatedSales);
+    storage.saveProducts(updatedProducts);
+    storage.saveSales(updatedSales);
+  };
+
+  const deleteSale = (id: string) => {
+    const sale = sales.find(s => s.id === id);
+    if (!sale) return;
+
+    // Restore stock to the related product
+    const updatedProducts = products.map(p =>
+      p.id === sale.productId ? { ...p, stock: p.stock + sale.quantity } : p
+    );
+    const updatedSales = sales.filter(s => s.id !== id);
+
     setProducts(updatedProducts);
     setSales(updatedSales);
     storage.saveProducts(updatedProducts);
@@ -214,10 +257,14 @@ export const InventoryProvider: React.FC<{ children: ReactNode }> = ({ children 
         updateCategory,
         deleteCategory,
         addStock,
+        deleteStockEntry,
         addSale,
+        deleteSale,
       }}
     >
       {children}
     </InventoryContext.Provider>
   );
 };
+
+
